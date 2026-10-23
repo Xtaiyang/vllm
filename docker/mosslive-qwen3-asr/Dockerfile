@@ -1,8 +1,10 @@
 # Build context: repository root.
 # Upstream source base: v0.14.0 / b17039bccc17b94a2ea107272ad7bc93508708df.
 # Reuse the released engine; this Dockerfile does not compile the fork's vLLM.
-# The digest pins the official multi-platform v0.14.0 image index.
-FROM vllm/vllm-openai:v0.14.0@sha256:1d6866b87630d94f5e0cdae55ab5abb4ce0b03fcb84d9d10612f9d518d19d4fd
+# The default pins the official multi-platform v0.14.0 image index.
+# Override ASR_BASE_IMAGE to use a verified mirror of the same image digest.
+ARG ASR_BASE_IMAGE=vllm/vllm-openai:v0.14.0@sha256:1d6866b87630d94f5e0cdae55ab5abb4ce0b03fcb84d9d10612f9d518d19d4fd
+FROM ${ASR_BASE_IMAGE}
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DEFAULT_TIMEOUT=300 \
