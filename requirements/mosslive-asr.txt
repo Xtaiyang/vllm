@@ -1,0 +1,17 @@
+# Qwen3-ASR streaming service on the official vLLM 0.14.0 image.
+# Direct dependencies are pinned; transitive dependencies are resolved by pip.
+# Keep the base image's vLLM/PyTorch/CUDA packages through Dockerfile constraints.
+qwen-asr[vllm]==0.0.6
+transformers==4.57.6
+accelerate==1.12.0
+qwen-omni-utils==0.0.9
+soundfile==0.14.0
+librosa==0.11.0
+nagisa==0.2.11
+soynlp==0.0.493
+pytz==2025.2
+sox==1.5.0
+av==16.1.0
+# Declared dependencies of qwen-asr, even though this HTTP wrapper has no UI.
+gradio==6.4.0
+flask==3.1.2
