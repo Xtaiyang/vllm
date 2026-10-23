@@ -43,6 +43,48 @@ architecture requires its matching manifest or the official image index.
 Use the build argument for an equivalent pinned base image, not an arbitrary
 vLLM/PyTorch version; Dockerfile version checks and ABI constraints still apply.
 
+## Base-image audit (2026-10-23)
+
+The Linux amd64 mirror manifest above was pulled on the company server and
+inspected in temporary containers with networking disabled, a read-only root
+filesystem, and no GPU, published port, or model mount. No ASR image was built
+and no packages were installed. Package metadata and `torch/version.py` report:
+
+| Component | Actual base-image version | R75 reference |
+| --- | --- | --- |
+| Python | 3.12.12 | 3.12.13 |
+| vLLM | 0.14.0 | 0.14.0 |
+| PyTorch | 2.9.1+cu129 | 2.9.1+cu128 |
+| torchaudio / torchvision | 2.9.1+cu129 / 0.24.1+cu129 | 2.9.1 / 0.24.1; CUDA suffixes not independently recorded |
+| Triton | 3.5.1 | 3.5.1 |
+| flashinfer-python | 0.5.3 | 0.5.3 |
+| Transformers / Accelerate | 4.57.6 / 1.12.0 | 4.57.6 / 1.12.0 |
+| NumPy | 2.2.6 | 2.2.6 |
+| nvidia-cublas-cu12 | 12.9.1.4 | 12.8.4.1 |
+| qwen-asr / qwen-omni-utils / SoXR | Not installed | 0.0.6 / 0.0.9 / 1.1.0; pinned for the ASR build |
+
+The system CUDA toolkit environment is `12.9.1`; PyTorch's own build reports
+CUDA `12.9`. This base is not an exact copy of the R75 conda environment.
+Keep the engine/GPU packages together; replacing only PyTorch with cu128 can
+break vLLM's compiled extensions. GPU execution remains untested.
+
+**Known pre-build issue:** the unmodified base fails `python3 -m pip check`:
+
+```text
+pygobject 3.42.1 requires pycairo, which is not installed.
+```
+
+This is inherited from the system `python3-gi` package under
+`/usr/lib/python3/dist-packages`. No installed Python distribution depends on
+PyGObject, and the ASR wrapper does not use it. A read-only
+`apt-get --simulate remove python3-gi` check would remove only `python3-gi`,
+`python3-software-properties`, and `software-properties-common`; no packages
+were actually removed. Resolve this inherited dependency before a formal
+build, for example by reviewing removal of those unused system packages or
+by providing the missing Cairo dependency. The Dockerfile keeps its strict
+`pip check`; it does not suppress this failure. The final ASR dependency
+resolution and image build have not been validated.
+
 ## Build configuration (not executed)
 
 | Field | Value |
