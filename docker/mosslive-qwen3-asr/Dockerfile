@@ -6,25 +6,29 @@
 ARG ASR_BASE_IMAGE=vllm/vllm-openai:v0.14.0@sha256:1d6866b87630d94f5e0cdae55ab5abb4ce0b03fcb84d9d10612f9d518d19d4fd
 FROM ${ASR_BASE_IMAGE}
 
+# Build-only package index; use HTTPS and keep certificate verification enabled.
+ARG ASR_PIP_INDEX_URL=https://pypi.org/simple
+
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DEFAULT_TIMEOUT=300 \
     PYTHONUNBUFFERED=1 \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
-# The base's unused distro GI bindings require a missing pycairo package.
-# Remove GI and its software-source helpers without autoremoving other packages.
+# Remove unused distro GI and distutils Blinker before ASR pip installation.
+# Keep unrelated packages; pip supplies the newer Blinker required by Flask.
 RUN DEBIAN_FRONTEND=noninteractive apt-get remove --yes --no-auto-remove \
-        python3-gi python3-software-properties software-properties-common \
+        python3-gi python3-software-properties software-properties-common python3-blinker \
     && python3 -m pip check
 
 WORKDIR /app
 COPY requirements/mosslive-asr.txt /tmp/mosslive-asr.txt
+COPY requirements/mosslive-asr-resolved.txt /tmp/mosslive-asr-resolved.txt
 
 # Prevent pip from replacing the engine or its installed GPU ABI packages.
-# Other dependencies (including transformers) may change to meet qwen-asr pins.
+# Pin the added/changed packages to the validated ASR dependency snapshot.
 RUN python3 -c 'from importlib.metadata import distributions; names={"vllm", "torch", "torchaudio", "torchvision", "triton", "xformers", "vllm-flash-attn"}; print("\n".join(sorted(d.metadata["Name"] + "==" + d.version for d in distributions() if d.metadata["Name"].lower().replace("_", "-") in names or d.metadata["Name"].lower().replace("_", "-").startswith(("nvidia-", "flashinfer-")))))' > /tmp/mosslive-base-constraints.txt \
-    && python3 -m pip install --constraint /tmp/mosslive-base-constraints.txt --requirement /tmp/mosslive-asr.txt \
+    && PIP_INDEX_URL="${ASR_PIP_INDEX_URL}" python3 -m pip install --constraint /tmp/mosslive-base-constraints.txt --constraint /tmp/mosslive-asr-resolved.txt --requirement /tmp/mosslive-asr.txt \
     && python3 -m pip check \
     && python3 -c 'import sys; from importlib.metadata import version; from packaging.version import Version; assert sys.version_info[:2] == (3, 12), sys.version; assert Version(version("vllm")).base_version == "0.14.0"; assert Version(version("torch")).base_version == "2.9.1"; assert version("qwen-asr") == "0.0.6"'
 
