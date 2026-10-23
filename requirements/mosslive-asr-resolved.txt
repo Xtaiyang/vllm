@@ -1,0 +1,46 @@
+# ASR added/changed-package snapshot validated on 2026-10-23 (Linux amd64).
+# Base: official vLLM 0.14.0 cu129, manifest
+# sha256:48a03c91eaa04fb7e71c77121a85e661d62de1b2207edf591aea6a05d779f9ef
+# Input source: 8352b4b4d5d64978bb19484ccbbbe4ffcff8103c + distro Blinker cleanup.
+# Full install, pip check, wrapper and explicit vLLM backend imports passed.
+# These are constraints used alongside mosslive-asr.txt and base GPU constraints.
+# Not a full standalone environment or an R75 environment freeze.
+aiofiles==24.1.0
+audioread==3.1.0
+av==16.1.0
+blinker==1.9.0
+brotli==1.2.1
+cython==3.3.0
+decorator==5.3.1
+dynet38==2.2
+ffmpy==1.0.0
+flask==3.1.2
+gradio==6.4.0
+gradio-client==2.0.3
+groovy==0.1.2
+itsdangerous==2.2.0
+joblib==1.6.0
+lazy-loader==0.6
+librosa==0.11.0
+nagisa==0.2.11
+narwhals==2.27.1
+orjson==3.13.0
+pandas==2.3.3
+platformdirs==4.13.5
+pooch==1.9.0
+pydub==0.25.1
+pytz==2025.2
+qwen-asr==0.0.6
+qwen-omni-utils==0.0.9
+safehttpx==0.1.7
+scikit-learn==1.9.1
+scipy==1.18.1
+semantic-version==2.10.0
+soundfile==0.14.0
+sox==1.5.0
+soxr==1.1.0
+soynlp==0.0.493
+threadpoolctl==3.7.0
+tomlkit==0.13.3
+tzdata==2026.5
+werkzeug==3.1.9
