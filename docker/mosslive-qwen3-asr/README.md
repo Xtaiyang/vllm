@@ -28,6 +28,21 @@ Direct dependencies are pinned. This is not a complete transitive lockfile;
 capture the resolved environment and final image digest during an authorized
 build before treating it as a reproducible release.
 
+NumPy `2.2.6` and SoXR `1.1.0` are explicitly pinned to the recorded R75 ASR
+environment. The `ASR_BASE_IMAGE` build argument can select a verified mirror
+without changing the default official base image. For Linux amd64, the audited
+mirror reference is:
+
+```text
+docker.m.daocloud.io/vllm/vllm-openai@sha256:48a03c91eaa04fb7e71c77121a85e661d62de1b2207edf591aea6a05d779f9ef
+```
+
+Pass that reference as `--build-arg ASR_BASE_IMAGE=...` when building on the
+company server. The reference selects only Linux amd64; a different target
+architecture requires its matching manifest or the official image index.
+Use the build argument for an equivalent pinned base image, not an arbitrary
+vLLM/PyTorch version; Dockerfile version checks and ABI constraints still apply.
+
 ## Build configuration (not executed)
 
 | Field | Value |
