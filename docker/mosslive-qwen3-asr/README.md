@@ -16,6 +16,9 @@ this fork are **not** compiled by this recipe.
   The new fork commit records this imported file, not its earlier history.
 - `requirements/mosslive-asr.txt`: direct dependencies, including
   `qwen-asr[vllm]==0.0.6` and `qwen-omni-utils==0.0.9`.
+- `requirements/mosslive-asr-resolved.txt`: the 39 added or changed Python
+  distributions recorded after successful temporary-container validation on
+  2026-10-23. The Dockerfile uses this snapshot as additional pip constraints.
 - `docker/mosslive-qwen3-asr/Dockerfile`: official v0.14.0 base image,
   pinned by image-index digest. The recipe constrains installed engine/GPU
   packages during dependency resolution and checks package consistency.
@@ -24,9 +27,11 @@ The official image index digest is
 `sha256:1d6866b87630d94f5e0cdae55ab5abb4ce0b03fcb84d9d10612f9d518d19d4fd`.
 Its Linux amd64 manifest is
 `sha256:48a03c91eaa04fb7e71c77121a85e661d62de1b2207edf591aea6a05d779f9ef`.
-Direct dependencies are pinned. This is not a complete transitive lockfile;
-capture the resolved environment and final image digest during an authorized
-build before treating it as a reproducible release.
+The pinned base plus direct requirements, the resolved ASR delta snapshot,
+and dynamically captured engine/GPU constraints describe the tested package
+combination. The delta snapshot is not a standalone, cross-platform lockfile.
+Capture the complete final package inventory and image digest during the
+first authorized image build; GPU execution must be tested separately.
 
 NumPy `2.2.6` and SoXR `1.1.0` are explicitly pinned to the recorded R75 ASR
 environment. The `ASR_BASE_IMAGE` build argument can select a verified mirror
@@ -47,8 +52,9 @@ vLLM/PyTorch version; Dockerfile version checks and ABI constraints still apply.
 
 The Linux amd64 mirror manifest above was pulled on the company server and
 inspected in temporary containers with networking disabled, a read-only root
-filesystem, and no GPU, published port, or model mount. No ASR image was built
-and no packages were installed. Package metadata and `torch/version.py` report:
+filesystem, and no GPU, published port, or model mount. This initial audit did not install
+packages; a later disposable-container ASR install is recorded below.
+Package metadata and `torch/version.py` report:
 
 | Component | Actual base-image version | R75 reference |
 | --- | --- | --- |
@@ -68,35 +74,72 @@ CUDA `12.9`. This base is not an exact copy of the R75 conda environment.
 Keep the engine/GPU packages together; replacing only PyTorch with cu128 can
 break vLLM's compiled extensions. GPU execution remains untested.
 
-**Inherited GI issue, cleanup verified:** the unmodified base fails
-`python3 -m pip check`:
+## Complete ASR dependency validation (2026-10-23)
 
-```text
-pygobject 3.42.1 requires pycairo, which is not installed.
-```
+A fresh disposable container from the audited Linux amd64 cu129 manifest
+successfully installed all 15 direct dependency pins. Validation used source
+`8352b4b4d5d64978bb19484ccbbbe4ffcff8103c` plus the distro Blinker cleanup now
+included in this Dockerfile. The 39 added or changed package versions were
+captured in `requirements/mosslive-asr-resolved.txt` and are now also applied
+as constraints; the initial successful installation produced this snapshot.
+The Dockerfile's new index argument and snapshot wiring have been checked
+statically, without a formal image build.
 
-This is inherited from the system `python3-gi` package under
-`/usr/lib/python3/dist-packages`. No installed Python distribution depends on
-PyGObject, and the ASR wrapper does not use it. The Dockerfile now explicitly
-removes `python3-gi`, `python3-software-properties`, and
-`software-properties-common` before installing ASR dependencies. It uses
-`--no-auto-remove` to retain unrelated packages and runs a strict
-`python3 -m pip check` immediately after cleanup. The existing strict check
-after ASR dependency installation is also retained.
+Two inherited system-package issues are handled before pip installation:
 
-The exact cleanup `RUN` command was executed successfully in a disposable
-container based on the audited cu129 manifest, with networking disabled and
-no GPU, published port, or model mount. A package-manager simulation first
-confirmed that only those three system packages would be removed. Actual
-cleanup then returned `No broken requirements found.` with exit code 0.
-The Python package inventory lost only `PyGObject 3.42.1`; no Python packages
-were added and no remaining package versions changed. The full installed
-engine/GPU package set, including vLLM, PyTorch, torchaudio, torchvision,
-Triton, NVIDIA libraries, and FlashInfer, remained identical. The temporary
-container was removed; the original base image and host packages were not
-modified. No ASR dependencies were installed and no image was built or saved.
-The final ASR dependency resolution, complete image build, and GPU execution
-remain unvalidated.
+- Unused `python3-gi` exposes PyGObject metadata requiring absent pycairo,
+  causing the original base's `pip check` to fail. Remove it and the unused
+  software-properties helpers.
+- Distro `python3-blinker` supplies Blinker 1.4 via distutils, which pip cannot
+  uninstall when Flask 3.1.2 needs a newer version. Remove the distro package
+  first; pip then installs the validated Blinker 1.9.0.
+
+APT also removes the reverse dependencies `python3-oauthlib`,
+`python3-lazr.restfulclient`, and `python3-launchpadlib`. Combined with the GI
+helpers and Blinker, exactly seven APT packages were removed in validation.
+`--no-auto-remove` preserves unrelated packages. Strict `pip check` runs after
+cleanup and again after the ASR install; both passed.
+
+Validation results:
+
+- All 15 direct pins matched, including NumPy 2.2.6 and SoXR 1.1.0.
+- All 26 protected engine/GPU packages retained their versions and distribution
+  RECORD hashes. vLLM remained 0.14.0; torch and torchaudio remained
+  2.9.1+cu129; torchvision remained 0.24.1+cu129.
+- PyTorch/audio/tokenizer imports, Qwen ASR streaming API imports, the wrapper
+  module, and wrapper CLI `--help` all returned exit code 0.
+- The vLLM backend was imported explicitly, beyond Qwen ASR's top-level import
+  which can suppress backend import failures; that check also passed.
+
+The company server has no NVIDIA GPU or driver, so a missing `libcuda.so.1`
+warning is expected. No model loading or GPU inference was tested. Python
+`sox==1.5.0` imports with a warning that the system SoX executable is absent;
+SoX CLI processing was not tested. No SoX references were found in the
+installed qwen_asr or qwen_omni_utils Python sources, and this wrapper's input
+is already raw PCM mono 16 kHz. The R75 Python patch version and CUDA flavor
+still differ from this official cu129 base as shown above.
+
+The disposable containers were removed after validation. The base image,
+host packages, and existing services were not modified. No formal ASR image
+was built, saved, pushed, imported, or deployed.
+
+## Build-time Python package index
+
+`ASR_PIP_INDEX_URL` defaults to `https://pypi.org/simple`. Its value is passed
+to pip as the process environment variable `PIP_INDEX_URL`, including pip's
+isolated build subprocesses. It is a build argument, not a persistent runtime
+setting. Runtime Hugging Face offline settings do not prevent build-time pip
+network access. Keep TLS certificate verification enabled.
+
+The validated install used `https://mirrors.aliyun.com/pypi/simple`. On the
+company server, public PyPI and the public mirror route were very slow. A
+container-only mapping of `mirrors.aliyun.com` to `100.100.2.158` used the
+reachable Aliyun internal route while retaining the valid HTTPS hostname and
+certificate. This address was obtained from `mirrors.cloud.aliyuncs.com` on
+that network; re-check its resolution and HTTPS reachability before a later
+build. Do not hard-code the mapping into this Dockerfile or change host DNS.
+Do not use the internal DNS name directly for HTTPS if its certificate does
+not match. The public mirror needs no host mapping where it is already fast.
 
 ## Build configuration (not executed)
 
@@ -116,11 +159,28 @@ vLLM source-build template uses its own build recipe and does not automatically
 execute this Dockerfile. This commit alone does not add platform UI support
 for selecting a custom Dockerfile.
 
-No image build, package installation in a container, GPU inference, or platform
-deployment has been performed for this addition. Python syntax, CLI parsing,
-HTTP contract wiring with a fake backend, and Dockerfile source paths can be
-checked locally without loading model weights. Image dependency resolution,
-GPU/driver compatibility, and recognition quality remain to be validated.
+The following company-server command is an example only; it has not been
+executed. Check out the full reviewed branch commit in a clean directory
+first, then run from the repository root. Use the internal host mapping only
+after confirming the network route as described above.
+
+```sh
+docker buildx build --platform linux/amd64 --load \
+  --add-host mirrors.aliyun.com:100.100.2.158 \
+  --build-arg ASR_BASE_IMAGE=docker.m.daocloud.io/vllm/vllm-openai@sha256:48a03c91eaa04fb7e71c77121a85e661d62de1b2207edf591aea6a05d779f9ef \
+  --build-arg ASR_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+  -f docker/mosslive-qwen3-asr/Dockerfile \
+  -t "mosslive-qwen3-asr-vllm:0.14.0-$(git rev-parse --short=12 HEAD)" .
+```
+
+The dependency validation clears the known Python installation blockers and
+makes a formal image build the next step. It does not replace that build or
+GPU verification. After an authorized build, check the image's package
+inventory, `pip check`, imports, and default entrypoint; record its image ID
+and digest before an authorized registry push/import. Registry namespace and
+push credentials still need to be supplied or verified. Model loading,
+GPU/driver compatibility, streaming recognition quality, and platform routing
+remain to be tested on the target GPU.
 
 ## Runtime configuration
 
