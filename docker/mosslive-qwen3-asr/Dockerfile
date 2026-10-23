@@ -12,6 +12,12 @@ ENV PIP_NO_CACHE_DIR=1 \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
+# The base's unused distro GI bindings require a missing pycairo package.
+# Remove GI and its software-source helpers without autoremoving other packages.
+RUN DEBIAN_FRONTEND=noninteractive apt-get remove --yes --no-auto-remove \
+        python3-gi python3-software-properties software-properties-common \
+    && python3 -m pip check
+
 WORKDIR /app
 COPY requirements/mosslive-asr.txt /tmp/mosslive-asr.txt
 
