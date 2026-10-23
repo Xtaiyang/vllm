@@ -68,7 +68,8 @@ CUDA `12.9`. This base is not an exact copy of the R75 conda environment.
 Keep the engine/GPU packages together; replacing only PyTorch with cu128 can
 break vLLM's compiled extensions. GPU execution remains untested.
 
-**Known pre-build issue:** the unmodified base fails `python3 -m pip check`:
+**Inherited GI issue, cleanup verified:** the unmodified base fails
+`python3 -m pip check`:
 
 ```text
 pygobject 3.42.1 requires pycairo, which is not installed.
@@ -76,14 +77,26 @@ pygobject 3.42.1 requires pycairo, which is not installed.
 
 This is inherited from the system `python3-gi` package under
 `/usr/lib/python3/dist-packages`. No installed Python distribution depends on
-PyGObject, and the ASR wrapper does not use it. A read-only
-`apt-get --simulate remove python3-gi` check would remove only `python3-gi`,
-`python3-software-properties`, and `software-properties-common`; no packages
-were actually removed. Resolve this inherited dependency before a formal
-build, for example by reviewing removal of those unused system packages or
-by providing the missing Cairo dependency. The Dockerfile keeps its strict
-`pip check`; it does not suppress this failure. The final ASR dependency
-resolution and image build have not been validated.
+PyGObject, and the ASR wrapper does not use it. The Dockerfile now explicitly
+removes `python3-gi`, `python3-software-properties`, and
+`software-properties-common` before installing ASR dependencies. It uses
+`--no-auto-remove` to retain unrelated packages and runs a strict
+`python3 -m pip check` immediately after cleanup. The existing strict check
+after ASR dependency installation is also retained.
+
+The exact cleanup `RUN` command was executed successfully in a disposable
+container based on the audited cu129 manifest, with networking disabled and
+no GPU, published port, or model mount. A package-manager simulation first
+confirmed that only those three system packages would be removed. Actual
+cleanup then returned `No broken requirements found.` with exit code 0.
+The Python package inventory lost only `PyGObject 3.42.1`; no Python packages
+were added and no remaining package versions changed. The full installed
+engine/GPU package set, including vLLM, PyTorch, torchaudio, torchvision,
+Triton, NVIDIA libraries, and FlashInfer, remained identical. The temporary
+container was removed; the original base image and host packages were not
+modified. No ASR dependencies were installed and no image was built or saved.
+The final ASR dependency resolution, complete image build, and GPU execution
+remain unvalidated.
 
 ## Build configuration (not executed)
 
