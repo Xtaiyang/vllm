@@ -12,7 +12,9 @@ Run as::
 
 HTTP contract (JSON):
 
-- ``POST /v1/session`` -> ``{"session_id": str}``
+- ``POST /v1/session`` with optional ``{"context": str}`` ->
+  ``{"session_id": str}``; a non-empty context is fixed for the session
+  (kept across reset) and echoed as ``"context_chars": int``.
 - ``POST /v1/session/<sid>/stream`` with ``{"audio_b64": str,
   "is_final": bool}`` -> ``{"text": str, "language": str | None}``.
   ``audio_b64`` is base64 PCM s16le mono 16 kHz; ``text`` is the
@@ -30,15 +32,24 @@ import json
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, TypedDict
+
+
+class _SessionIdentity(TypedDict):
+    session_id: str
+
+
+class _CreateSessionResponse(_SessionIdentity, total=False):
+    context_chars: int
 
 
 class _StreamingSession:
     """One Qwen3-ASR streaming state with its cumulative transcript."""
 
-    def __init__(self, state: Any) -> None:
-        """Wrap one backend-owned streaming state object."""
+    def __init__(self, state: Any, context: str = "") -> None:
+        """Wrap one backend-owned streaming state and its fixed context."""
         self.state = state
+        self.context = context
 
 
 class _ASRService:
@@ -59,15 +70,22 @@ class _ASRService:
             "unfixed_token_num": args.unfixed_token_num,
             "chunk_size_sec": args.chunk_size_sec,
         }
+        self.max_context_chars = args.max_context_chars
         self._sessions: dict[str, _StreamingSession] = {}
         self._lock = threading.Lock()
 
-    def create_session(self) -> str:
-        """Create one streaming session and return its identity."""
+    def create_session(self, context: str = "") -> str:
+        """Create one streaming session; context biases the whole session.
+
+        An empty context builds exactly the prompt the server built before
+        context support, so callers that send no body see no change.
+        """
         session_id = uuid.uuid4().hex
         with self._lock:
-            state = self._asr.init_streaming_state(**self._streaming_kwargs)
-            self._sessions[session_id] = _StreamingSession(state)
+            state = self._asr.init_streaming_state(
+                context=context, **self._streaming_kwargs
+            )
+            self._sessions[session_id] = _StreamingSession(state, context)
         return session_id
 
     def stream(self, session_id: str, pcm: bytes, is_final: bool) -> dict[str, Any]:
@@ -108,8 +126,10 @@ class _ASRService:
     def reset(self, session_id: str) -> None:
         """Replace one session's streaming state with a fresh one."""
         with self._lock:
-            state = self._asr.init_streaming_state(**self._streaming_kwargs)
-            self._sessions[session_id].state = state
+            session = self._sessions[session_id]
+            session.state = self._asr.init_streaming_state(
+                context=session.context, **self._streaming_kwargs
+            )
 
     def drop(self, session_id: str) -> None:
         """Remove one streaming session."""
@@ -125,7 +145,9 @@ def _build_handler(service: _ASRService) -> type[BaseHTTPRequestHandler]:
 
         server_version = "Qwen3ASRStreaming/1.0"
 
-        def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+        def _send_json(
+            self, status: int, payload: dict[str, Any] | _CreateSessionResponse
+        ) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -152,7 +174,20 @@ def _build_handler(service: _ASRService) -> type[BaseHTTPRequestHandler]:
             """Serve session creation, streaming, and reset."""
             try:
                 if self.path == "/v1/session":
-                    self._send_json(200, {"session_id": service.create_session()})
+                    context = self._read_json().get("context", "")
+                    if not isinstance(context, str):
+                        self._send_json(400, {"error": "context must be a string"})
+                        return
+                    if len(context) > service.max_context_chars:
+                        self._send_json(400, {"error": "context too long"})
+                        return
+                    reply: _CreateSessionResponse = {
+                        "session_id": service.create_session(context)
+                    }
+                    if context:
+                        # Lets a client tell this server from one that drops context.
+                        reply["context_chars"] = len(context)
+                    self._send_json(200, reply)
                     return
                 parts = self.path.strip("/").split("/")
                 if len(parts) == 3 and parts[:2] == ["v1", "session"]:
@@ -209,6 +244,8 @@ def main() -> None:
     parser.add_argument("--chunk-size-sec", type=float, default=0.5)
     parser.add_argument("--unfixed-chunk-num", type=int, default=2)
     parser.add_argument("--unfixed-token-num", type=int, default=5)
+    # Context shares max_model_len with the audio and the transcript prefix.
+    parser.add_argument("--max-context-chars", type=int, default=1000)
     args = parser.parse_args()
 
     service = _ASRService(args)
