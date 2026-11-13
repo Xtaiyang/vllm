@@ -14,7 +14,10 @@ HTTP contract (JSON):
 
 - ``POST /v1/session`` with optional ``{"context": str}`` ->
   ``{"session_id": str}``; a non-empty context is fixed for the session
-  (kept across reset) and echoed as ``"context_chars": int``.
+  (kept across reset) and echoed as ``"context_chars": int``. The same body
+  accepts optional ``"language": "Chinese"`` (a Qwen language name), echoed
+  unchanged in the create response and retained across reset. Omit language
+  for automatic detection; invalid language values return HTTP 400.
 - ``POST /v1/session/<sid>/stream`` with ``{"audio_b64": str,
   "is_final": bool}`` -> ``{"text": str, "language": str | None}``.
   ``audio_b64`` is base64 PCM s16le mono 16 kHz; ``text`` is the
@@ -31,8 +34,50 @@ import base64
 import json
 import threading
 import uuid
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TypedDict
+
+
+# Canonical names from qwen-asr 0.0.6 inference.utils.SUPPORTED_LANGUAGES.
+SUPPORTED_LANGUAGES: tuple[str, ...] = (
+    "Chinese", "English", "Cantonese", "Arabic", "German", "French",
+    "Spanish", "Portuguese", "Indonesian", "Italian", "Korean", "Russian",
+    "Thai", "Vietnamese", "Japanese", "Turkish", "Hindi", "Malay",
+    "Dutch", "Swedish", "Danish", "Finnish", "Polish", "Czech",
+    "Filipino", "Persian", "Greek", "Romanian", "Hungarian", "Macedonian",
+)
+
+
+@dataclass(frozen=True)
+class _CreateSessionRequest:
+    context: str = ""
+    language: str | None = None
+    canonical_language: str | None = None
+
+
+def _parse_create_session_request(
+    payload: object, max_context_chars: int
+) -> _CreateSessionRequest:
+    """Validate client fields before any model state is allocated."""
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    context = payload.get("context", "")
+    if not isinstance(context, str):
+        raise ValueError("context must be a string")
+    if len(context) > max_context_chars:
+        raise ValueError("context too long")
+    if "language" not in payload:
+        return _CreateSessionRequest(context=context)
+    language = payload["language"]
+    if not isinstance(language, str) or not language.strip():
+        raise ValueError("language must be a non-empty string")
+    # Match qwen-asr's normalize_language_name; ISO codes are not supported.
+    stripped = language.strip()
+    canonical = stripped[:1].upper() + stripped[1:].lower()
+    if canonical not in SUPPORTED_LANGUAGES:
+        raise ValueError(f"unsupported language: {language}")
+    return _CreateSessionRequest(context, language, canonical)
 
 
 class _SessionIdentity(TypedDict):
@@ -41,15 +86,19 @@ class _SessionIdentity(TypedDict):
 
 class _CreateSessionResponse(_SessionIdentity, total=False):
     context_chars: int
+    language: str
 
 
 class _StreamingSession:
     """One Qwen3-ASR streaming state with its cumulative transcript."""
 
-    def __init__(self, state: Any, context: str = "") -> None:
-        """Wrap one backend-owned streaming state and its fixed context."""
+    def __init__(
+        self, state: Any, context: str = "", language: str | None = None
+    ) -> None:
+        """Wrap backend state and the fixed session context and language."""
         self.state = state
         self.context = context
+        self.language = language
 
 
 class _ASRService:
@@ -74,18 +123,20 @@ class _ASRService:
         self._sessions: dict[str, _StreamingSession] = {}
         self._lock = threading.Lock()
 
-    def create_session(self, context: str = "") -> str:
-        """Create one streaming session; context biases the whole session.
+    def create_session(
+        self, context: str = "", language: str | None = None
+    ) -> str:
+        """Create a session with fixed context and optional forced language.
 
-        An empty context builds exactly the prompt the server built before
-        context support, so callers that send no body see no change.
+        Empty context and no language keep the original automatic-detection
+        prompt, so callers that send no body see no change.
         """
         session_id = uuid.uuid4().hex
         with self._lock:
             state = self._asr.init_streaming_state(
-                context=context, **self._streaming_kwargs
+                context=context, language=language, **self._streaming_kwargs
             )
-            self._sessions[session_id] = _StreamingSession(state, context)
+            self._sessions[session_id] = _StreamingSession(state, context, language)
         return session_id
 
     def stream(self, session_id: str, pcm: bytes, is_final: bool) -> dict[str, Any]:
@@ -128,7 +179,9 @@ class _ASRService:
         with self._lock:
             session = self._sessions[session_id]
             session.state = self._asr.init_streaming_state(
-                context=session.context, **self._streaming_kwargs
+                context=session.context,
+                language=session.language,
+                **self._streaming_kwargs,
             )
 
     def drop(self, session_id: str) -> None:
@@ -174,19 +227,23 @@ def _build_handler(service: _ASRService) -> type[BaseHTTPRequestHandler]:
             """Serve session creation, streaming, and reset."""
             try:
                 if self.path == "/v1/session":
-                    context = self._read_json().get("context", "")
-                    if not isinstance(context, str):
-                        self._send_json(400, {"error": "context must be a string"})
-                        return
-                    if len(context) > service.max_context_chars:
-                        self._send_json(400, {"error": "context too long"})
+                    try:
+                        request = _parse_create_session_request(
+                            self._read_json(), service.max_context_chars
+                        )
+                    except ValueError as exc:
+                        self._send_json(400, {"error": str(exc)})
                         return
                     reply: _CreateSessionResponse = {
-                        "session_id": service.create_session(context)
+                        "session_id": service.create_session(
+                            request.context, request.canonical_language
+                        )
                     }
-                    if context:
+                    if request.context:
                         # Lets a client tell this server from one that drops context.
-                        reply["context_chars"] = len(context)
+                        reply["context_chars"] = len(request.context)
+                    if request.language is not None:
+                        reply["language"] = request.language
                     self._send_json(200, reply)
                     return
                 parts = self.path.strip("/").split("/")
